@@ -1,23 +1,23 @@
-import hmac, hashlib, secrets, json
+import secrets
+import hashlib
+import hmac
 
-CLAVE_SECRETA = b'ClaveSuperSecretaParaElPai_2026'
+CLAVE_MAC = b'Clave_Secreta_Banco_2024'
 
-nonces_usudos = set()
+def generar_nonce(length=16):
+    """Genera un número aleatorio único (Nonce)"""
+    return secrets.token_hex(length)
 
-def generar_nonce():
-    return secrets.token_hex(16)
+def generar_hash_password(password, salt):
+    """Genera un hash SHA-256 de la contraseña + salt"""
+    datos = password + salt
+    return hashlib.sha256(datos.encode()).hexdigest()
 
-def calcular_mac(datos_str, nonce):
-    mensaje_concatenado = datos_str + nonce
-    mac = hmac.new(CLAVE_SECRETA, mensaje_concatenado.encode('utf-8'), hashlib.sha256).hexdigest()
-    return mac
-
-def validar_integridad(datos_str, nonce, mac_recibido):
-    if nonce in nonces_usudos:
-        return False
-    mac_calculado = calcular_mac(datos_str, nonce)
-
-    if secrets.compare_digest(mac_calculado, mac_recibido):
-        return True, "OK"
-    else:
-        return False, "ERROR INTEGRIDAD: El MAC no coincide (mensaje modificado)"
+def mac(mensaje, key):
+    """Calcula el HMAC-SHA256 de un mensaje"""
+    if isinstance(mensaje, str):
+        mensaje = mensaje.encode()
+    if isinstance(key, str):
+        key = key.encode()
+        
+    return hmac.new(key, mensaje, hashlib.sha256).hexdigest()

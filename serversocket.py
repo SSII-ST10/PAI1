@@ -1,104 +1,152 @@
 import socket
+import sys
+import os
 import json
-import hash_salt_password as hash  
-import seguridad  
+import csv
+import secrets
+import traceback 
+import seguridad 
 
-HOST = "127.0.0.1"
-PORT = 3030  
+HOST = 'localhost'
+PORT = 3030 
+ARCHIVO_USUARIOS = 'usuarios.json'       
+ARCHIVO_TRANSACCIONES = 'transacciones.csv' 
+nonces_usados = set()
 
-def procesar_logica_negocio(datos_str):
-    """
-    Procesa el JSON interno (registro/login) una vez que sabemos que es seguro.
-    """
+def cargar_usuarios():
+    """Carga los usuarios desde JSON para acceso rápido tipo diccionario"""
+    if not os.path.exists(ARCHIVO_USUARIOS):
+        datos_base = {"1": ["ab4fea0dbae12cb8e67a5c0d0a895c16e750c560b7702513e695cb7b494e1d99", "ea6fa87194b7ef911d726409d9168879"]}
+        with open(ARCHIVO_USUARIOS, 'w') as f:
+            json.dump(datos_base, f)
+        return datos_base
     try:
-        mensaje = json.loads(datos_str)
-        accion = mensaje.get("accion")
-        user = mensaje.get("usuario")
-        pwd = mensaje.get("password")
+        with open(ARCHIVO_USUARIOS, 'r') as f:
+            return json.load(f)
+    except:
+        return {}
 
-        if accion == "registro":
-            if hash.registrar_usuario(user, pwd):
-                return "Usuario registrado correctamente"
-            else:
-                return "Error: El usuario ya existe"
-        
-        elif accion == "login":
-            if hash.verificar_contraseña(user, pwd):
-                return "Login correcto. Bienvenido!"
-            else:
-                return "Error: Credenciales incorrectas"
-        
-        else:
-            return "Acción desconocida"
-            
-    except Exception as e:
-        return f"Error procesando lógica: {e}"
+def guardar_usuario(usuario, password_hash, salt):
+    """Guarda nuevo usuario en el JSON"""
+    usuarios = cargar_usuarios()
+    usuarios[usuario] = [password_hash, salt]
+    with open(ARCHIVO_USUARIOS, 'w') as f:
+        json.dump(usuarios, f)
 
-def manejar_conexion(conn, addr):
-    print(f"Conectado por {addr}")
-    while True:
-        try:
-            data = conn.recv(2048)
-            if not data:
-                break 
-            
-            try:
-                paquete = json.loads(data.decode())
-            except json.JSONDecodeError:
-                print(f">> Recibido algo que no es JSON de {addr}")
-                continue
+def registrar_transaccion(origen, destino, cantidad, mac):
+    """Añade una línea al final del CSV (Append eficiente)"""
+    existe = os.path.exists(ARCHIVO_TRANSACCIONES)
+    with open(ARCHIVO_TRANSACCIONES, 'a', newline='') as f:
+        writer = csv.writer(f)
+        if not existe:
+            writer.writerow(["Origen", "Destino", "Cantidad", "MAC_Verificacion"])
+        writer.writerow([origen, destino, cantidad, mac])
 
-            datos_reales = paquete.get("datos") 
-            nonce = paquete.get("nonce")
-            mac_recibido = paquete.get("mac")
-
-            if datos_reales is None or nonce is None or mac_recibido is None:
-                print(f">> ALERTA: Mensaje inválido recibido de {addr}. Falta nonce o mac.")
-                error_response = json.dumps({"status": "ERROR", "mensaje": "Formato incorrecto. Actualiza tu cliente."})
-                conn.sendall(error_response.encode())
-                continue
-
-            print(f"\n--- Nuevo Mensaje Seguro de {addr} ---")
-            print(f"Nonce: {nonce}")
-            print(f"MAC: {mac_recibido}")
-            
-            es_valido, motivo = seguridad.validar_integridad(datos_reales, nonce, mac_recibido)
-            
-            if es_valido:
-                print(">> SEGURIDAD OK. Integridad verificada.")
-                respuesta_texto = procesar_logica_negocio(datos_reales)
-                respuesta_final = json.dumps({"status": "OK", "mensaje": respuesta_texto})
-            else:
-                print(f">> ALERTA DE SEGURIDAD: {motivo}")
-                respuesta_final = json.dumps({"status": "SECURITY_ERROR", "mensaje": motivo})
-            
-            conn.sendall(respuesta_final.encode())
-            
-        except ConnectionResetError:
-            print(f"Cliente {addr} forzó el cierre de la conexión.")
-            break
-        except Exception as e:
-            print(f"Error inesperado en conexión: {e}")
-            break
-
-print(f"--- Servidor SEGURO INICIADO en {HOST}:{PORT} ---")
-print("Esperando clientes...")
-
-with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+def iniciar_servidor():
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         s.bind((HOST, PORT))
-        s.listen()
-    except OSError as e:
-        print(f"Error al iniciar servidor: {e}")
-        print("Comprueba que no tengas otro servidor corriendo en este puerto.")
-        exit()
+    except socket.error as e:
+        print(f"Error puerto {PORT}: {e}")
+        return
+
+    s.listen(5)
+    print(f"--- SERVIDOR LISTO EN {HOST}:{PORT} ---")
+    print("Esperando conexión del cliente...")
 
     while True:
         try:
             conn, addr = s.accept()
-            with conn:
-                manejar_conexion(conn, addr)
-            print(f"Cliente {addr} desconectado. Esperando siguiente...")
-        except KeyboardInterrupt:
-            print("\nServidor detenido por el usuario.")
-            break
+            print(f"\n[+] Cliente conectado: {addr}")
+            
+            while True:
+                data = conn.recv(1024)
+                if not data:
+                    break
+                
+                try:
+                    mensaje = data.decode()
+                    print(f"Procesando: {mensaje}")
+                    
+                    partes = mensaje.split(',')
+                    tipo = partes[0]
+
+                    if tipo == '1': 
+                        if len(partes) < 3: 
+                            conn.send("ERROR: Faltan datos".encode())
+                            continue
+                        user, nonce = partes[1], partes[2]
+                        
+                        if nonce in nonces_usados:
+                            conn.send("ERROR: Replay detectado".encode())
+                            continue
+                        nonces_usados.add(nonce)
+                        
+                        usuarios = cargar_usuarios()
+                        if user in usuarios:
+                            conn.send(usuarios[user][1].encode()) 
+                            pass_client = conn.recv(1024).decode()
+                            
+                            if secrets.compare_digest(pass_client, usuarios[user][0]):
+                                conn.send("OK".encode())
+                                print(f"Login OK: {user}")
+                            else:
+                                conn.send("ERROR: Password mal".encode())
+                        else:
+                            conn.send("ERROR: Usuario no existe".encode())
+
+                    elif tipo == '2': 
+                        if len(partes) < 4: continue
+                        u, p, n = partes[1], partes[2], partes[3]
+                        
+                        if n in nonces_usados:
+                            conn.send("ERROR: Replay".encode())
+                            continue
+                        nonces_usados.add(n)
+                        
+                        salt = secrets.token_hex(16)
+                        ph = seguridad.generar_hash_password(p, salt)
+                        guardar_usuario(u, ph, salt)
+                        conn.send("OK".encode())
+                        print(f"Registro OK: {u}")
+
+                    elif tipo == '3': 
+                        if len(partes) < 6: 
+                            conn.send("ERROR: Datos incompletos".encode())
+                            continue
+                        
+                        org, dest, cant, n, mac_rx = partes[1], partes[2], partes[3], partes[4], partes[5]
+                        
+                        if n in nonces_usados:
+                            conn.send("ERROR: Replay".encode())
+                            continue
+                        nonces_usados.add(n)
+                        
+                        msg_datos = f"{org},{dest},{cant},{n}"
+                        mac_calc = seguridad.mac(msg_datos, seguridad.CLAVE_MAC)
+                        
+                        if secrets.compare_digest(mac_rx, mac_calc):
+                            registrar_transaccion(org, dest, cant, mac_rx)
+                            conn.send("OK: Transferencia realizada con integridad".encode())
+                            print(f"Transferencia OK: {cant}€ ({org}->{dest})")
+                        else:
+                            print(f"ALERTA: Integridad fallida en transf de {org}")
+                            conn.send("ERROR: Fallo de Integridad".encode())
+
+                    elif tipo == '4':
+                        print("Cliente cerró sesión.")
+                        conn.close()
+                        break
+
+                except Exception as e_interno:
+                    print(f"Error procesando mensaje: {e_interno}")
+                    traceback.print_exc()
+
+        except Exception as e:
+            print(f"Error general: {e}")
+        finally:
+            try: conn.close()
+            except: pass
+
+if __name__ == "__main__":
+    iniciar_servidor()
