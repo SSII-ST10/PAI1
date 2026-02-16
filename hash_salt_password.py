@@ -1,27 +1,46 @@
 import json, hashlib, os, secrets
 
-def hash_password_salt(usuario, contraseña):
+DB_FILE = "../usuarios.json"
+
+def _cargar_datos():
+    if not os.path.exists(DB_FILE):
+        return {}
+    try:
+        with open(DB_FILE,'r',encoding='utf-8') as archivo:
+            return json.load(archivo)
+    except (json.JSONDecodeError, FileNotFoundError):
+        return {}
+    
+def _guardar_datos(data):
+    with open(DB_FILE, 'w', encoding='utf-8') as archivo:
+        json.dump(data, archivo, indent = 4)
+
+    
+def registrar_usuario(usuario, contraseña):
+    data = _cargar_datos()
+
+    if usuario in data:
+        return False
+    
     salt = secrets.token_hex(16)
-
     salted_password = salt + contraseña
-
     sha256_hash = hashlib.sha256(salted_password.encode()).hexdigest()
 
-    try:
-        with open("usuarios.json",'r',encoding='utf-8') as archivo:
-            data = json.load(archivo)
-        with open("usuarios.json",'w',encoding='utf-8') as archivo:
-            data[usuario] = {"salt":salt,"password_hash":sha256_hash}
-            json.dump(data,archivo, indent=4)
-        print("Usuario guardado correctamente")
-    except Exception as e:
-        print("Error al guardar", e)
+    data[usuario] = {"salt":salt, "password_hash":sha256_hash}
+    _guardar_datos(data)
 
-    return salt + sha256_hash
+    return True
 
-dicc = {}
+def verificar_contraseña(usuario, contraseña):
+    data = _cargar_datos()
 
-usuario = input("Introduzca su nombre de usuario: ")
-contraseña = input("Introduzca su contraseña: ")
+    if usuario not in data:
+        return False
+    
+    stored_salt = data[usuario]["salt"]
+    stored_hash = data[usuario]["password_hash"]
 
-hash_password_salt(usuario, contraseña)
+    check_salted = stored_salt + contraseña
+    check_hash = hashlib.sha256(check_salted.encode()).hexdigest()
+
+    return secrets.compare_digest(stored_hash, check_hash)
