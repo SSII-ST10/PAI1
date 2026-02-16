@@ -1,149 +1,86 @@
 import socket
-import sys
-import os
-import json
-import csv
 import secrets
-import traceback 
+import sys
 import seguridad 
 
 HOST = 'localhost'
-PORT = 3030 
-ARCHIVO_USUARIOS = 'usuarios.json'
-ARCHIVO_TRANSACCIONES = 'transacciones.csv'
-nonces_usados = set()
+PORT = 3030
 
-def cargar_usuarios():
-    if not os.path.exists(ARCHIVO_USUARIOS):
-        datos_base = {"1": ["ab4fea0dbae12cb8e67a5c0d0a895c16e750c560b7702513e695cb7b494e1d99", "ea6fa87194b7ef911d726409d9168879"]}
-        with open(ARCHIVO_USUARIOS, 'w') as f:
-            json.dump(datos_base, f)
-        return datos_base
-    try:
-        with open(ARCHIVO_USUARIOS, 'r') as f:
-            return json.load(f)
-    except:
-        return {}
-
-def guardar_usuario(usuario, password_hash, salt):
-    usuarios = cargar_usuarios()
-    usuarios[usuario] = [password_hash, salt]
-    with open(ARCHIVO_USUARIOS, 'w') as f:
-        json.dump(usuarios, f)
-
-def registrar_transaccion(origen, destino, cantidad, mac):
-    existe = os.path.exists(ARCHIVO_TRANSACCIONES)
-    with open(ARCHIVO_TRANSACCIONES, 'a', newline='') as f:
-        writer = csv.writer(f)
-        if not existe:
-            writer.writerow(["Origen", "Destino", "Cantidad", "MAC_Verificacion"])
-        writer.writerow([origen, destino, cantidad, mac])
-
-def iniciar_servidor():
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    try:
-        s.bind((HOST, PORT))
-    except socket.error as e:
-        print(f"Error puerto {PORT}: {e}")
-        return
-
-    s.listen(5)
-    print(f"--- SERVIDOR COMPATIBLE CORRIENDO EN {HOST}:{PORT} ---")
-    print("Esperando conexión del cliente gráfico...")
-
+def main():
     while True:
+        print("\n--- MENU CLIENTE ---")
+        print("1. Iniciar Sesion")
+        print("2. Registrarse")
+        print("3. Transferencia")
+        print("4. Salir")
+        
+        opcion = input("Elige: ")
+        
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            conn, addr = s.accept()
-            print(f"\n[+] Conectado: {addr}")
-            
-            while True:
-                data = conn.recv(1024)
-                if not data:
-                    break
+            s.connect((HOST, PORT))
+        except:
+            print("Error: No se puede conectar al servidor")
+            continue
+
+        try:
+            if opcion == '1':
+                user = input("Usuario: ")
+                password = input("Contrasena: ")
+                client_nonce = secrets.token_hex(16)
                 
-                try:
-                    mensaje = data.decode()
-                    print(f"Procesando: {mensaje}")
+                msg = f"1,{user},{client_nonce}"
+                s.send(msg.encode())
+                
+                respuesta = s.recv(1024).decode()
+                
+                if "ERROR" in respuesta:
+                    print(respuesta)
+                else:
+                    datos = respuesta.split(',')
+                    salt_rx = datos[0]
+                    nonce_server_rx = datos[1]
                     
-                    partes = mensaje.split(',')
-                    tipo = partes[0]
+                    hash_base = seguridad.generar_hash_password(password, salt_rx)
+                    
+                    hash_final = seguridad.generar_hash_password(hash_base, nonce_server_rx)
+                    
+                    s.send(hash_final.encode())
+                    
+                    resultado = s.recv(1024).decode()
+                    print("Servidor:", resultado)
 
-                    if tipo == '1': 
-                        if len(partes) < 3: 
-                            conn.send("ERROR: Faltan datos".encode())
-                            continue
-                        user, nonce = partes[1], partes[2]
-                        
-                        if nonce in nonces_usados:
-                            conn.send("ERROR: Replay detectado".encode())
-                            continue
-                        nonces_usados.add(nonce)
-                        
-                        usuarios = cargar_usuarios()
-                        if user in usuarios:
-                            conn.send(usuarios[user][1].encode())
-                            pass_client = conn.recv(1024).decode()
-                            
-                            if secrets.compare_digest(pass_client, usuarios[user][0]):
-                                conn.send("OK".encode())
-                                print(f"Usuario {user} autenticado.")
-                            else:
-                                conn.send("ERROR: Password mal".encode())
-                        else:
-                            conn.send("ERROR: Usuario no existe".encode())
+            elif opcion == '2':
+                user = input("Nuevo Usuario: ")
+                password = input("Nueva Contrasena: ")
+                nonce = secrets.token_hex(16)
+                
+                msg = f"2,{user},{password},{nonce}"
+                s.send(msg.encode())
+                print(s.recv(1024).decode())
 
-                    elif tipo == '2': 
-                        if len(partes) < 4: continue
-                        u, p, n = partes[1], partes[2], partes[3]
-                        
-                        if n in nonces_usados:
-                            conn.send("ERROR: Replay".encode())
-                            continue
-                        nonces_usados.add(n)
-                        
-                        salt = secrets.token_hex(16)
-                        ph = seguridad.generar_hash_password(p, salt)
-                        guardar_usuario(u, ph, salt)
-                        conn.send("OK".encode())
-                        print(f"Usuario {u} registrado.")
+            elif opcion == '3':
+                org = input("Origen: ")
+                dest = input("Destino: ")
+                cant = input("Cantidad: ")
+                nonce = secrets.token_hex(16)
+                
+                msg_datos = f"{org},{dest},{cant},{nonce}"
+                
+                mac_val = seguridad.mac(msg_datos, seguridad.CLAVE_MAC)
+                
+                msg_final = f"3,{org},{dest},{cant},{nonce},{mac_val}"
+                s.send(msg_final.encode())
+                print(s.recv(1024).decode())
 
-                    elif tipo == '3': 
-                        if len(partes) < 6: 
-                            conn.send("ERROR: Datos incompletos".encode())
-                            continue
-                        
-                        org, dest, cant, n, mac_rx = partes[1], partes[2], partes[3], partes[4], partes[5]
-                        
-                        if n in nonces_usados:
-                            conn.send("ERROR: Replay".encode())
-                            continue
-                        nonces_usados.add(n)
-                        
-                        msg_datos = f"{org},{dest},{cant},{n}"
-                        mac_calc = seguridad.mac(msg_datos, seguridad.CLAVE_MAC)
-                        
-                        if secrets.compare_digest(mac_rx, mac_calc):
-                            registrar_transaccion(org, dest, cant, mac_rx)
-                            conn.send("OK: Transferencia realizada con integridad".encode())
-                            print(f"Transferencia OK: {cant} eur")
-                        else:
-                            print(f"ALERTA: MAC inválido. Esperado={mac_calc}, Recibido={mac_rx}")
-                            conn.send("ERROR: Fallo de Integridad".encode())
-
-                    elif tipo == '4':
-                        print("Cliente cerró sesión.")
-                        conn.close()
-                        break
-
-                except Exception as e_interno:
-                    print(f"Error procesando mensaje: {e_interno}")
-                    traceback.print_exc()
+            elif opcion == '4':
+                s.send("4,BYE".encode())
+                break
 
         except Exception as e:
-            print(f"Error general: {e}")
+            print(f"Error: {e}")
         finally:
-            try: conn.close()
-            except: pass
+            s.close()
 
 if __name__ == "__main__":
-    iniciar_servidor()
+    main()

@@ -113,23 +113,33 @@ class BancoApp:
                 messagebox.showwarning("Aviso", "Rellene todos los campos")
                 return
             
-            nonce = seguridad.generar_nonce()
-            msg = f"1,{u},{nonce}"
+            nonce_cliente = seguridad.generar_nonce()
+            msg = f"1,{u},{nonce_cliente}"
             resp = self.enviar_recibir(msg)
             
             if resp and not resp.startswith("ERROR") and "Datos incorrectos" not in resp:
-                salt = resp
-                pass_hash = seguridad.generar_hash_password(p, salt)
-                self.log(f"Hash generado: {pass_hash[:10]}...", "SEC")
-                
-                resp_final = self.enviar_recibir(pass_hash)
-                
-                if "OK" in resp_final:
-                    self.username = u
-                    messagebox.showinfo("Éxito", "Login correcto")
-                    self.mostrar_dashboard()
-                else:
-                    messagebox.showerror("Error", f"Login fallido: {resp_final}")
+                try:
+                    datos = resp.split(',')
+                    salt = datos[0]
+                    nonce_server = datos[1]
+                    
+                    hash_base = seguridad.generar_hash_password(p, salt)
+                    
+                    hash_final = seguridad.generar_hash_password(hash_base, nonce_server)
+                    
+                    self.log(f"Hash enviado: {hash_final[:10]}...", "SEC")
+                    
+                    resp_final = self.enviar_recibir(hash_final)
+                    
+                    if "OK" in resp_final:
+                        self.username = u
+                        messagebox.showinfo("Éxito", "Login correcto")
+                        self.mostrar_dashboard()
+                    else:
+                        messagebox.showerror("Error", f"Login fallido: {resp_final}")
+
+                except IndexError:
+                     messagebox.showerror("Error", "Error procesando respuesta del servidor")
             else:
                 messagebox.showerror("Error", f"Usuario no encontrado o error: {resp}")
 
