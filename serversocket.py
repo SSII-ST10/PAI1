@@ -1,12 +1,11 @@
-import socket
-import sys
-import os
-import secrets
-import traceback
-import time
 import hashlib
-import seguridad
+import secrets
+import socket
+import time
+import traceback
+
 import db_helper
+import seguridad
 
 HOST = "localhost"
 PORT = 3030
@@ -14,6 +13,9 @@ PORT = 3030
 # Rate limiting: diccionario en memoria {ip: [timestamp1, timestamp2, ...]}
 rate_limit_tracker = {}
 request_counter = 0  # Para triggear cleanup periódico
+
+# Sesiones activas en memoria: {username: {nonce_intercambio, clave_sesion}}
+sesiones_activas = {}
 
 
 def check_rate_limit(ip):
@@ -66,6 +68,8 @@ def iniciar_servidor():
             conn, addr = s.accept()
             print(f"\n[+] Cliente conectado: {addr}")
 
+            usuario_autenticado = None
+
             while True:
                 data = conn.recv(1024)
                 if not data:
@@ -111,13 +115,23 @@ def iniciar_servidor():
 
                             hash_recibido = conn.recv(1024).decode()
 
-                            # Calcular hash esperado: PBKDF2(PBKDF2(password, salt), nonce_server)
-                            calculo_local = seguridad.pbkdf2_hash(
+                            # Calcular respuesta esperada: HMAC-SHA256(stored_hash, nonce_server)
+                            # stored_hash ya es PBKDF2(password, salt), así que solo aplicamos HMAC
+                            calculo_local = seguridad.verificar_respuesta_challenge(
                                 stored_hash, nonce_server
                             )
 
                             if secrets.compare_digest(hash_recibido, calculo_local):
-                                conn.send("OK".encode())
+                                nonce_intercambio = seguridad.generar_nonce()
+                                sesiones_activas[user] = {
+                                    "nonce_intercambio": nonce_intercambio,
+                                    "clave_sesion": seguridad.derivar_clave_sesion(
+                                        stored_hash, nonce_intercambio
+                                    ),
+                                }
+                                usuario_autenticado = user
+
+                                conn.send(f"OK,{nonce_intercambio}".encode())
                                 print(f"[LOGIN OK] Usuario: {user}")
                             else:
                                 conn.send("ERROR: Contraseña incorrecta".encode())
@@ -170,9 +184,14 @@ def iniciar_servidor():
                             continue
 
                         # Verificar MAC
-                        msg_datos = f"{org},{dest},{cant},{n}"
-                        clave_mac = seguridad.obtener_clave_mac()
-                        mac_calc = seguridad.mac(msg_datos, clave_mac)
+                        msg_datos = f"{org},{dest},{cant}"
+                        sesion = sesiones_activas.get(org)
+                        if not sesion:
+                            conn.send("ERROR: Sesión no válida".encode())
+                            print(f"[SESSION FAIL] Transacción sin sesión: {org}")
+                            continue
+
+                        mac_calc = seguridad.mac(msg_datos, sesion["clave_sesion"])
 
                         if secrets.compare_digest(mac_rx, mac_calc):
                             # Generar ID de transacción único
@@ -189,10 +208,12 @@ def iniciar_servidor():
                             conn.send(
                                 "ERROR: Fallo de Integridad (MAC inválido)".encode()
                             )
-                            print(f"[MAC FAIL] Transacción rechazada")
+                            print("[MAC FAIL] Transacción rechazada")
 
                     elif tipo == "4":
                         # LOGOUT
+                        if usuario_autenticado:
+                            sesiones_activas.pop(usuario_autenticado, None)
                         conn.close()
                         break
 

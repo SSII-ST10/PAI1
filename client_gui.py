@@ -1,18 +1,12 @@
-import tkinter as tk
-from tkinter import ttk, messagebox, scrolledtext
 import socket
-import seguridad
 import time
-import json
-import os
+import tkinter as tk
+from tkinter import messagebox, scrolledtext, ttk
+
+import seguridad
 
 HOST = "localhost"
 PORT = 3030
-
-# Obtener clave MAC desde variable de entorno (NO del servidor)
-MAC_KEY = os.getenv("BANCO_MAC_KEY", "desarrollo_inseguro_32bytes_clave")
-if isinstance(MAC_KEY, str):
-    MAC_KEY = MAC_KEY.encode()
 
 
 class BancoApp:
@@ -24,6 +18,7 @@ class BancoApp:
         self.sock = None
         self.username = None
         self.connected = False
+        self.clave_sesion = None
 
         self.style = ttk.Style()
         self.style.theme_use("clam")
@@ -154,15 +149,28 @@ class BancoApp:
                     # Usar PBKDF2 para hash de contraseña
                     hash_base = seguridad.pbkdf2_hash(p, salt)
 
-                    # Segundo hash con nonce del servidor
-                    hash_final = seguridad.pbkdf2_hash(hash_base, nonce_server)
+                    # Respuesta al challenge: HMAC-SHA256(hash_base, nonce_server)
+                    hash_final = seguridad.calcular_respuesta_challenge(
+                        p, salt, nonce_server
+                    )
 
                     self.log(f"Hash enviado: {hash_final[:10]}...", "SEC")
 
                     resp_final = self.enviar_recibir(hash_final)
 
-                    if resp_final and "OK" in resp_final:
+                    if resp_final and resp_final.startswith("OK"):
                         self.username = u
+                        try:
+                            partes_ok = resp_final.split(",")
+                            if len(partes_ok) >= 2:
+                                nonce_intercambio = partes_ok[1]
+                                self.clave_sesion = seguridad.derivar_clave_sesion(
+                                    hash_base, nonce_intercambio
+                                )
+                        except Exception as e:
+                            self.log(
+                                f"No se pudo derivar clave de sesión: {e}", "ERROR"
+                            )
                         messagebox.showinfo("Éxito", "Login correcto")
                         self.mostrar_dashboard()
                     else:
@@ -246,15 +254,21 @@ class BancoApp:
 
             nonce = seguridad.generar_nonce()
 
-            mensaje_datos = f"{self.username},{dest},{cant},{nonce}"
+            mensaje_datos = f"{self.username},{dest},{cant}"
 
-            # Usar MAC_KEY de variable de entorno
-            mac_calculado = seguridad.mac(mensaje_datos.encode(), MAC_KEY)
+            if not self.clave_sesion:
+                messagebox.showerror(
+                    "Error",
+                    "Sesión no inicializada. Vuelva a iniciar sesión.",
+                )
+                return
+
+            mac_calculado = seguridad.mac(mensaje_datos.encode(), self.clave_sesion)
 
             self.log(f"Calculando MAC para: {mensaje_datos}", "SEC")
             self.log(f"MAC: {mac_calculado}", "SEC")
 
-            msg_final = f"3,{mensaje_datos},{mac_calculado}"
+            msg_final = f"3,{mensaje_datos},{nonce},{mac_calculado}"
 
             resp = self.enviar_recibir(msg_final)
 

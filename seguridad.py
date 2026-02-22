@@ -1,18 +1,7 @@
-import secrets
 import hashlib
 import hmac
-import os
+import secrets
 from hashlib import pbkdf2_hmac
-
-
-def obtener_clave_mac():
-    """
-    Obtiene clave MAC desde variable de entorno con default de desarrollo
-    Returns:
-        bytes - clave MAC para HMAC
-    """
-    clave = os.getenv("BANCO_MAC_KEY", "desarrollo_inseguro_32bytes_clave")
-    return clave.encode() if isinstance(clave, str) else clave
 
 
 def generar_nonce(length=16):
@@ -56,3 +45,51 @@ def mac(mensaje, key):
     if isinstance(key, str):
         key = key.encode()
     return hmac.new(key, mensaje, hashlib.sha256).hexdigest()
+
+
+def calcular_respuesta_challenge(password, salt, nonce_server):
+    """
+    Calcula la respuesta al challenge del servidor para autenticación.
+    Paso 1: PBKDF2(password, salt) -> hash_base  (100,000 iteraciones)
+    Paso 2: HMAC-SHA256(hash_base, nonce_server) -> respuesta final
+    Uso: lado CLIENTE (tiene la contraseña en texto plano).
+    Args:
+        password: str - contraseña en texto plano
+        salt: str - salt en hexadecimal (del servidor)
+        nonce_server: str - nonce generado por el servidor
+    Returns:
+        str - respuesta en hexadecimal
+    """
+    hash_base = pbkdf2_hash(password, salt)
+    if isinstance(nonce_server, str):
+        nonce_server = nonce_server.encode()
+    return hmac.new(hash_base.encode(), nonce_server, hashlib.sha256).hexdigest()
+
+
+def verificar_respuesta_challenge(stored_hash, nonce_server):
+    """
+    Verifica la respuesta al challenge usando el hash almacenado en BD.
+    Paso único: HMAC-SHA256(stored_hash, nonce_server) -> respuesta esperada
+    Uso: lado SERVIDOR (tiene el hash PBKDF2 ya almacenado, no el password).
+    Args:
+        stored_hash: str - PBKDF2(password, salt) almacenado en BD
+        nonce_server: str - nonce generado por el servidor
+    Returns:
+        str - respuesta esperada en hexadecimal
+    """
+    if isinstance(nonce_server, str):
+        nonce_server = nonce_server.encode()
+    return hmac.new(stored_hash.encode(), nonce_server, hashlib.sha256).hexdigest()
+
+
+def derivar_clave_sesion(password_hash, nonce_intercambio):
+    """
+    Deriva clave de sesión única para MAC de transacciones
+    A partir del hash de password y un nonce de intercambio
+    """
+    # PBKDF2 rapido (1000 iteraciones) para derivar clave por sesion
+    if isinstance(password_hash, str):
+        password_hash = password_hash.encode()
+    if isinstance(nonce_intercambio, str):
+        nonce_intercambio = nonce_intercambio.encode()
+    return pbkdf2_hmac("sha256", password_hash, nonce_intercambio, 1000)
