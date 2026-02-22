@@ -16,3 +16,13 @@ Abrir `client_gui.py` y usar cualquiera de estos:
 - **Usuario:** `admin` / **Password:** `admin123`
 - **Usuario:** `user1` / **Password:** `password1`
 - **Usuario:** `user2` / **Password:** `password2`
+
+## Pruebas realizadas
+
+Para ejecutar las pruebas automáticas, se puede usar el siguiente comando:
+
+```bash
+python .\tests\test_seguridad.py -v
+```
+
+Hay una prueba que necesita que se ejecute el servidor (`serversocket.py`)
